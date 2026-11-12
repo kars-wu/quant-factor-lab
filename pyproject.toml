@@ -1,0 +1,23 @@
+[project]
+name = "quant-factor-lab"
+version = "1.0.0"
+description = "A-share factor research, backtest, paper-trading and multi-agent factor mining toolkit"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::FutureWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = ["outputs", "data", "simulation/static"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501", "E741"]

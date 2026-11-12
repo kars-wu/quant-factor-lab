@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>量化研究 · 模拟盘工作台</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#171a21; --line:#242a35; --text:#e6e9ef;
+    --muted:#8b94a7; --up:#e05252; --down:#2f9e6b; --accent:#4c8dff;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+  header { padding:18px 24px; border-bottom:1px solid var(--line);
+           display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  h1 { font-size:16px; margin:0; font-weight:600; letter-spacing:.4px; }
+  .spacer { flex:1; }
+  button { background:var(--panel); color:var(--text); border:1px solid var(--line);
+           border-radius:6px; padding:7px 14px; cursor:pointer; font-size:13px; }
+  button:hover { border-color:var(--accent); color:#fff; }
+  #status { color:var(--muted); font-size:12px; min-width:180px; }
+  main { display:grid; grid-template-columns:300px 1fr; gap:18px; padding:18px 24px 40px; }
+  @media (max-width:900px){ main { grid-template-columns:1fr; } }
+  .cards { display:flex; flex-direction:column; gap:10px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+          padding:12px 14px; cursor:pointer; }
+  .card.active { border-color:var(--accent); }
+  .card h3 { margin:0 0 4px; font-size:14px; font-weight:600; }
+  .card .meta { color:var(--muted); font-size:12px; }
+  .card .row { display:flex; justify-content:space-between; margin-top:8px; font-size:12px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+           padding:16px; margin-bottom:18px; }
+  .panel h2 { margin:0 0 12px; font-size:14px; font-weight:600; }
+  .stats { display:flex; gap:22px; flex-wrap:wrap; margin-bottom:10px; }
+  .stat .k { color:var(--muted); font-size:11px; }
+  .stat .v { font-size:18px; font-variant-numeric:tabular-nums; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:500; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .muted { color:var(--muted); }
+  .up { color:var(--up); } .down { color:var(--down); }
+  svg { width:100%; height:260px; display:block; }
+  .empty { color:var(--muted); padding:20px 0; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>量化研究 · 模拟盘工作台</h1>
+  <div class="spacer"></div>
+  <span id="status">就绪</span>
+  <button onclick="trigger('advance')">推进策略</button>
+  <button onclick="trigger('bootstrap')">历史回填</button>
+  <button onclick="loadAll()">刷新</button>
+</header>
+
+<main>
+  <section class="cards" id="cards"></section>
+  <section>
+    <div class="panel">
+      <h2 id="title">净值曲线</h2>
+      <div class="stats" id="stats"></div>
+      <svg id="chart" viewBox="0 0 800 260" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="panel">
+      <h2>当前持仓</h2>
+      <div id="positions"></div>
+    </div>
+    <div class="panel">
+      <h2>明日预选</h2>
+      <div id="preselect"></div>
+    </div>
+    <div class="panel">
+      <h2>最近成交</h2>
+      <div id="trades"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const API = '';
+let current = null;
+
+const fmtPct = v => (v === null || v === undefined) ? '-' :
+  `<span class="${v >= 0 ? 'up' : 'down'}">${(v * 100).toFixed(2)}%</span>`;
+const fmtNum = (v, d = 2) => (v === null || v === undefined) ? '-' : Number(v).toFixed(d);
+
+async function get(path) {
+  const r = await fetch(API + path);
+  if (!r.ok) throw new Error(`${path} → ${r.status}`);
+  return r.json();
+}
+
+async function loadAll() {
+  try {
+    const list = await get('/api/strategies');
+    renderCards(list);
+    if (!current && list.length) current = list[0].strategy_id;
+    if (current) await loadDetail(current);
+    poll();
+  } catch (e) {
+    document.getElementById('status').textContent = '加载失败: ' + e.message;
+  }
+}
+
+function renderCards(list) {
+  const box = document.getElementById('cards');
+  if (!list.length) { box.innerHTML = '<div class="empty">暂无策略，点击「历史回填」生成</div>'; return; }
+  box.innerHTML = list.map(s => {
+    const st = s.stats || {};
+    return `<div class="card ${s.strategy_id === current ? 'active' : ''}"
+              onclick="select('${s.strategy_id}')">
+      <h3>${s.name || s.strategy_id}</h3>
+      <div class="meta">${s.pool} · ${s.direction === 'low' ? '买最小端' : '买最大端'} · top${s.top_k}</div>
+      <div class="row">
+        <span class="muted">净值 ${fmtNum(s.nav, 4)}</span>
+        <span>${fmtPct(st.annual_return)}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function select(id) { current = id; loadAll(); }
+
+async function loadDetail(id) {
+  const nav = await get(`/api/strategies/${id}/nav`);
+  document.getElementById('title').textContent = `净值曲线 · ${id}`;
+  const st = nav.stats || {};
+  document.getElementById('stats').innerHTML = [
+    ['区间', `${st.start || '-'} ~ ${st.end || '-'}`],
+    ['累计收益', fmtPct(st.total_return)],
+    ['年化收益', fmtPct(st.annual_return)],
+    ['夏普', fmtNum(st.sharpe, 2)],
+    ['最大回撤', fmtPct(st.max_drawdown)],
+  ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+  drawChart(nav.points || []);
+
+  const pos = await get(`/api/strategies/${id}/positions`);
+  renderTable('positions', pos.positions || [], [
+    ['代码', r => r.symbol], ['名称', r => r.name],
+    ['数量', r => r.quantity, 'num'], ['成本', r => fmtNum(r.avg_cost, 3), 'num'],
+    ['建仓日', r => r.open_date],
+  ], `现金 ${fmtNum(pos.cash, 0)}`);
+
+  const pre = await get(`/api/strategies/${id}/preselect?limit=20`);
+  renderTable('preselect', pre, [
+    ['#', r => r.rank, 'num'], ['代码', r => r.symbol], ['名称', r => r.name],
+    ['信号日', r => r.signal_date], ['买入日', r => r.buy_date],
+    ['分数', r => fmtNum(r.score, 4), 'num'],
+  ]);
+
+  const trades = await get(`/api/strategies/${id}/trades?limit=40`);
+  renderTable('trades', trades, [
+    ['代码', r => r.symbol], ['买入日', r => r.buy_date], ['卖出日', r => r.sell_date],
+    ['数量', r => r.quantity, 'num'], ['收益%', r => fmtPct(r.return_pct), 'num'],
+    ['原因', r => r.exit_reason || '-'],
+  ]);
+}
+
+function renderTable(id, rows, cols, footer = '') {
+  const el = document.getElementById(id);
+  if (!rows.length) { el.innerHTML = `<div class="empty">${footer || '暂无数据'}</div>`; return; }
+  const head = cols.map(([t, , cls]) => `<th class="${cls || ''}">${t}</th>`).join('');
+  const body = rows.map(r => '<tr>' + cols.map(([, f, cls]) =>
+    `<td class="${cls || ''}">${f(r) ?? '-'}</td>`).join('') + '</tr>').join('');
+  el.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>` +
+    (footer ? `<div class="muted" style="margin-top:8px;font-size:12px">${footer}</div>` : '');
+}
+
+function drawChart(points) {
+  const svg = document.getElementById('chart');
+  if (points.length < 2) { svg.innerHTML = ''; return; }
+  const W = 800, H = 260, P = 30;
+  const xs = points.map((_, i) => i);
+  const ys = points.map(p => p.nav);
+  const min = Math.min(...ys), max = Math.max(...ys);
+  const sx = i => P + (W - 2 * P) * i / (points.length - 1);
+  const sy = v => H - P - (H - 2 * P) * (v - min) / ((max - min) || 1);
+  const path = points.map((p, i) => `${i ? 'L' : 'M'}${sx(i).toFixed(1)},${sy(p.nav).toFixed(1)}`).join(' ');
+  const area = `${path} L${sx(points.length - 1).toFixed(1)},${H - P} L${sx(0)},${H - P} Z`;
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(t => {
+    const v = min + (max - min) * t, y = sy(v);
+    return `<line x1="${P}" y1="${y}" x2="${W - P}" y2="${y}" stroke="#242a35" stroke-width="1"/>
+            <text x="${W - P + 4}" y="${y + 4}" fill="#8b94a7" font-size="10">${v.toFixed(2)}</text>`;
+  }).join('');
+  const first = points[0].date, last = points[points.length - 1].date;
+  svg.innerHTML = `${ticks}
+    <path d="${area}" fill="#4c8dff" fill-opacity="0.10"/>
+    <path d="${path}" fill="none" stroke="#4c8dff" stroke-width="1.6"/>
+    <text x="${P}" y="${H - 8}" fill="#8b94a7" font-size="10">${first}</text>
+    <text x="${W - P}" y="${H - 8}" fill="#8b94a7" font-size="10" text-anchor="end">${last}</text>`;
+}
+
+async function trigger(mode) {
+  try {
+    const r = await fetch(API + '/api/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+    const j = await r.json();
+    document.getElementById('status').textContent =
+      j.status === 'started' ? `已启动 ${mode}` : `${mode} 正在运行`;
+    setTimeout(loadAll, 3000);
+  } catch (e) { document.getElementById('status').textContent = '触发失败: ' + e.message; }
+}
+
+async function poll() {
+  try {
+    const s = await get('/api/status');
+    const p = s.progress || {};
+    document.getElementById('status').textContent =
+      s.locked ? `运行中：${p.label || ''} ${p.current || 0}/${p.total || 0}` : '就绪';
+  } catch (_) { /* ignore */ }
+}
+
+loadAll();
+setInterval(poll, 5000);
+</script>
+</body>
+</html>

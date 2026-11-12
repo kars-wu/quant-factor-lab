@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install pytest
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Test
+        run: pytest -q
+      - name: Multi-agent demo (offline)
+        run: python -m multi_agent.cli demo --symbols 60 --dates 300 --selection-top 10 --hold-days 5 --quiet
